@@ -1,0 +1,27 @@
+# qwen-derm 依赖配置 - 推理版本
+# 适用于：仅运行 annotate_skin_disease.py 进行图像标注
+# 安装命令：pip install -r requirements.txt
+
+# ============== 核心依赖（必须）==============
+# Unsloth 会自动安装兼容的 torch、transformers 等依赖
+unsloth>=2025.1.0
+
+# 固定 transformers 版本以兼容 Unsloth
+# Unsloth 要求 <=4.56.2，我们选择 4.56.2 以获得最新功能
+transformers==4.56.2
+
+# 图像处理
+Pillow>=9.0.0
+
+# ============== 可选依赖（推荐安装）==============
+# 加速模型下载
+huggingface-hub>=0.23.0
+
+# 如果你需要从 Hub 加载数据集（可选）
+# datasets>=2.14.0
+
+# ============== 版本说明 ==============
+# transformers 4.56.2: 经测试与 unsloth 兼容的最新版本
+# unsloth: 自动处理 torch、xformers、bitsandbytes 等依赖
+# Python 要求: 3.8 - 3.11
+# CUDA: 11.8 或 12.x

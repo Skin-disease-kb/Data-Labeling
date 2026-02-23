@@ -6,16 +6,26 @@
 
 ### 1. 安装依赖
 
-#### 一键安装脚本（推荐）
+#### 方式一：使用 requirements.txt（推荐）
 
 ```bash
-python install.py
+# 仅用于图像标注推理
+pip install -r requirements.txt
+
+# 或完整版（包含训练依赖，用于运行 Jupyter Notebook）
+pip install -r requirements-full.txt
 ```
 
-安装脚本会自动：
-- 检测环境（Colab/本地）
-- 安装 Unsloth 和所有依赖
-- 安装指定版本的 transformers 和相关库
+#### 依赖说明
+
+| 核心依赖 | 版本 | 说明 |
+|----------|------|------|
+| `unsloth` | >=2025.1.0 | 模型推理加速框架 |
+| `transformers` | **4.56.2** | 固定版本以确保兼容性 |
+| `trl` | 0.22.2 | 训练依赖（可选） |
+| `Pillow` | >=9.0.0 | 图像处理 |
+
+> **注意**：`transformers==4.56.2` 是同时兼容 Unsloth（要求 <=4.56.2）和 TRL（要求 >=4.55.0）的版本。
 
 ### 2. 验证安装
 
@@ -155,11 +165,31 @@ Example output:
 ```
 D:\Skin-disease\
 ├── annotate_skin_disease.py   # 主标注脚本
-├── install.py                 # 一键安装脚本
 ├── README.md                  # 本文档
+├── requirements.txt           # 推理依赖（仅标注）
+├── requirements-full.txt      # 完整依赖（标注+训练）
 ├── images/                    # 输入图像文件夹（需自行创建）
 ├── annotations.csv            # 输出标注文件（运行后生成）
 ├── annotation_errors.log      # 错误日志（运行后生成）
 └── visualized/                # 可视化图像（运行后生成）
 ```
 
+## 环境要求
+
+- **Python**: 3.8 - 3.11
+- **CUDA**: 11.8 或 12.x
+- **GPU**: NVIDIA GPU（推荐 8GB+ 显存，支持 4-bit 量化）
+
+## 版本兼容性
+
+本项目依赖版本经过精心配置以确保兼容性：
+
+| 包 | 版本 | 兼容性说明 |
+|----|------|-----------|
+| transformers | 4.56.2 | ✅ Unsloth 支持的最大版本 |
+| trl | 0.22.2 | ✅ 支持 transformers >=4.55.0 |
+| datasets | >=2.14.0 | ✅ 新版兼容 |
+
+## 许可证
+
+MIT License
