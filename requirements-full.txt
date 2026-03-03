@@ -1,22 +1,24 @@
 # qwen-derm 依赖配置 - 完整版本（推理 + 训练）
 # 适用于：运行 annotate_skin_disease.py + Qwen3_VL_(8B)_Vision.ipynb 微调训练
 # 安装命令：pip install -r requirements-full.txt
+# Windows + NVIDIA GPU 推荐先安装 CUDA 版 PyTorch（示例 CU126）：
+# python -m pip install --upgrade --index-url https://download.pytorch.org/whl/cu126 torch torchvision torchaudio
 
 # ============== 核心依赖（必须）==============
-# Unsloth 会自动安装兼容的 torch、transformers 等依赖
-unsloth>=2025.1.0
+# Unsloth 会自动安装兼容依赖；为确保 GPU 推理/训练，请优先按上方命令安装 CUDA 版 torch
+unsloth>=2026.2.1
 
 # 固定 transformers 版本以兼容 Unsloth 和 TRL
-# Unsloth 要求 <=4.56.2，TRL 0.22.2 要求 >=4.55.0
-# 4.56.2 同时满足两者
-transformers==4.56.2
+# 经测试 transformers 4.57.6 可兼容 unsloth 2026.2.1，且支持 qwen3_vl
+# TRL 0.22.2 要求 >=4.55.0，4.57.6 满足要求
+transformers==4.57.6
 
 # 图像处理
 Pillow>=9.0.0
 
 # ============== 训练依赖（Notebook 需要）==============
 # TRL 用于 SFTTrainer 训练
-# 版本 0.22.2 与 transformers 4.56.2 兼容
+# 版本 0.22.2 与 transformers 4.57.6 兼容
 trl==0.22.2
 
 # 数据集处理
@@ -33,16 +35,16 @@ rich>=13.0.0
 # ============== 版本兼容性说明 ==============
 # 
 # ✅ 已验证的版本组合：
-# - transformers==4.56.2
+# - transformers==4.57.6
 # - trl==0.22.2  
-# - unsloth>=2025.1.0
+# - unsloth>=2026.2.1
 #
 # 兼容性矩阵：
 # ┌─────────────────┬─────────────┬─────────────┐
 # │ 包              │ 要求版本    │ 实际版本    │
 # ├─────────────────┼─────────────┼─────────────┤
-# │ unsloth         │ <=4.56.2    │ 4.56.2 ✅   │
-# │ trl 0.22.2      │ >=4.55.0    │ 4.56.2 ✅   │
+# │ unsloth         │ >=2026.2.1  │ 2026.2.1+ ✅ │
+# │ trl 0.22.2      │ >=4.55.0    │ 4.57.6 ✅   │
 # └─────────────────┴─────────────┴─────────────┘
 #
 # Python 要求: 3.8 - 3.11

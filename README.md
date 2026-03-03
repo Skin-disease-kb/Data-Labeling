@@ -1,43 +1,56 @@
 # 皮肤病图像标注工具
 
-基于 Qwen3-VL-8B-Instruct 模型的皮肤病图像自动标注工具，能够自动检测并标注皮肤病灶的边界框。
+基于 Qwen3-VL / Qwen2.5-VL 模型的皮肤病图像自动标注工具，能够自动检测并标注皮肤病灶的边界框，并输出可视化高亮结果。
 
 ## 快速开始
 
-### 1. 安装依赖
-
-#### 方式一：使用 requirements.txt（推荐）
+### 1. 创建 Conda 环境（推荐）
 
 ```bash
-# 仅用于图像标注推理
-pip install -r requirements.txt
+conda create -n qwen-derm python=3.10 -y
+conda activate qwen-derm
+python -m pip install --upgrade pip
+```
 
-# 或完整版（包含训练依赖，用于运行 Jupyter Notebook）
-pip install -r requirements-full.txt
+### 2. 安装 CUDA 版 PyTorch 和项目依赖（Windows）
+
+> 参考 Unsloth 官方 Windows 安装建议，先安装 CUDA 版 PyTorch，再安装项目依赖。
+
+```bash
+# 以 CUDA 12.6 为例（请按你的驱动/CUDA版本调整）
+python -m pip install --upgrade --index-url https://download.pytorch.org/whl/cu126 torch torchvision torchaudio
+
+# 推理版（仅标注）
+python -m pip install -r requirements.txt
+
+# 或完整版（标注 + 训练）
+# python -m pip install -r requirements-full.txt
 ```
 
 #### 依赖说明
 
 | 核心依赖 | 版本 | 说明 |
 |----------|------|------|
-| `unsloth` | >=2025.1.0 | 模型推理加速框架 |
-| `transformers` | **4.56.2** | 固定版本以确保兼容性 |
+| `unsloth` | >=2026.2.1 | 模型推理加速框架 |
+| `transformers` | **4.57.6** | 支持 `qwen3_vl` 架构并兼容当前 Unsloth |
 | `trl` | 0.22.2 | 训练依赖（可选） |
 | `Pillow` | >=9.0.0 | 图像处理 |
 
-> **注意**：`transformers==4.56.2` 是同时兼容 Unsloth（要求 <=4.56.2）和 TRL（要求 >=4.55.0）的版本。
+> **注意**：`Qwen3-VL` 需要较新的 `transformers` 才能识别 `qwen3_vl` 架构，项目已固定为 `transformers==4.57.6`（与当前 Unsloth 版本实测兼容）。
 
-### 2. 验证安装
+### 3. 验证安装
 
 运行以下命令确认 PyTorch 能识别 GPU：
 
 ```bash
-python -c "import torch; print('CUDA 可用:', torch.cuda.is_available())"
+python -c "import torch, transformers; print('CUDA 可用:', torch.cuda.is_available()); print('CUDA 版本:', torch.version.cuda); print('transformers:', transformers.__version__)"
 ```
 
-应该输出：`CUDA 可用: True`
+应至少满足：
+- `CUDA 可用: True`
+- `transformers: 4.57.6`
 
-### 3. 准备数据
+### 4. 准备数据
 
 将待标注的皮肤病图像放在一个文件夹中，例如：
 
@@ -51,7 +64,7 @@ D:\Skin-disease\images\
 
 支持的图像格式：`.jpg`, `.jpeg`, `.png`, `.bmp`, `.tif`, `.tiff`
 
-### 4. 运行标注
+### 5. 运行标注
 
 ```bash
 python annotate_skin_disease.py --input ./images --output annotations.csv
@@ -77,6 +90,10 @@ python annotate_skin_disease.py --input <图像文件夹> --output <输出CSV>
 | `--no-visualize` | - | 禁用可视化 | - |
 | `--viz-dir` | - | 可视化输出目录 | `visualized` |
 
+> 如果默认 `8B` 模型在显存不足（常见于 8GB 显存）时加载失败，脚本会自动回退到 `unsloth/Qwen2.5-VL-3B-Instruct-unsloth-bnb-4bit`。
+>
+> 脚本会自动将 Triton / TorchInductor 缓存写入项目目录下的 `.cache/`，避免 Windows 中文用户名路径导致的编译缓存编码错误。
+
 ### 使用示例
 
 ```bash
@@ -88,6 +105,9 @@ python annotate_skin_disease.py --input ./images --output annotations.csv --viz-
 
 # 调整温度参数（更稳定的输出）
 python annotate_skin_disease.py --input ./images --temperature 0.5
+
+# 手动指定 3B 模型（显存更友好）
+python annotate_skin_disease.py --input ./images --model unsloth/Qwen2.5-VL-3B-Instruct-unsloth-bnb-4bit
 
 # 只标注不生成可视化
 python annotate_skin_disease.py --input ./images --no-visualize
@@ -124,7 +144,7 @@ lesion_003.jpg,D:/Skin-disease/images/lesion_003.jpg,,,failed,无法从回复中
 
 ### 2. 可视化图像
 
-在 `visualized/` 文件夹中生成带红色边界框的图像，文件名与原图保持一致。
+在 `visualized/` 文件夹中生成带红色边界框和半透明病灶区域高亮的图像，文件名与原图保持一致。
 
 ### 3. 错误日志
 
@@ -163,7 +183,7 @@ Example output:
 ## 文件说明
 
 ```
-D:\Skin-disease\
+qwen-derm/
 ├── annotate_skin_disease.py   # 主标注脚本
 ├── README.md                  # 本文档
 ├── requirements.txt           # 推理依赖（仅标注）
@@ -171,14 +191,15 @@ D:\Skin-disease\
 ├── images/                    # 输入图像文件夹（需自行创建）
 ├── annotations.csv            # 输出标注文件（运行后生成）
 ├── annotation_errors.log      # 错误日志（运行后生成）
-└── visualized/                # 可视化图像（运行后生成）
+├── visualized/                # 可视化图像（运行后生成）
+└── .cache/                    # Triton / TorchInductor 缓存（运行后自动生成）
 ```
 
 ## 环境要求
 
 - **Python**: 3.8 - 3.11
 - **CUDA**: 11.8 或 12.x
-- **GPU**: NVIDIA GPU（推荐 8GB+ 显存，支持 4-bit 量化）
+- **GPU**: NVIDIA GPU（推荐 8GB+ 显存；8GB 环境默认会自动回退到 3B 模型）
 
 ## 版本兼容性
 
@@ -186,7 +207,8 @@ D:\Skin-disease\
 
 | 包 | 版本 | 兼容性说明 |
 |----|------|-----------|
-| transformers | 4.56.2 | ✅ Unsloth 支持的最大版本 |
+| unsloth | >=2026.2.1 | ✅ 与当前脚本和 transformers 组合实测可用 |
+| transformers | 4.57.6 | ✅ 支持 Qwen3-VL 且与当前 Unsloth 兼容 |
 | trl | 0.22.2 | ✅ 支持 transformers >=4.55.0 |
 | datasets | >=2.14.0 | ✅ 新版兼容 |
 

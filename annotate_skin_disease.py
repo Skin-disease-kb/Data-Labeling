@@ -10,24 +10,42 @@
 """
 
 import argparse
-import json
-import re
 import csv
+import json
+import os
+import re
 import sys
 from pathlib import Path
 from datetime import datetime
 from typing import Tuple, Optional, List, Dict
 
 from PIL import Image, ImageDraw
+
+CACHE_ROOT = Path(os.environ.get("QWEN_DERM_CACHE_DIR", str(Path.cwd() / ".cache")))
+TRITON_CACHE_DIR = Path(os.environ.get("TRITON_CACHE_DIR", str(CACHE_ROOT / "triton")))
+TORCHINDUCTOR_CACHE_DIR = Path(
+    os.environ.get("TORCHINDUCTOR_CACHE_DIR", str(CACHE_ROOT / "torchinductor"))
+)
+
+os.environ.setdefault("TRITON_CACHE_DIR", str(TRITON_CACHE_DIR))
+os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", str(TORCHINDUCTOR_CACHE_DIR))
+
+TRITON_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+TORCHINDUCTOR_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
 from unsloth import FastVisionModel
 import torch
+
+DEFAULT_MODEL = "unsloth/Qwen3-VL-8B-Instruct-unsloth-bnb-4bit"
+LOW_VRAM_FALLBACK_MODEL = "unsloth/Qwen2.5-VL-3B-Instruct-unsloth-bnb-4bit"
+LOW_VRAM_ERROR_SNIPPET = "Some modules are dispatched on the CPU or the disk"
 
 
 # ============================================================================
 # 模块 A: 模型加载函数
 # ============================================================================
 
-def load_model(model_path: str = "unsloth/Qwen3-VL-8B-Instruct-unsloth-bnb-4bit") -> tuple:
+def load_model(model_path: str = DEFAULT_MODEL) -> tuple:
     """
     加载 Qwen3-VL 模型用于推理。
 
@@ -39,20 +57,27 @@ def load_model(model_path: str = "unsloth/Qwen3-VL-8B-Instruct-unsloth-bnb-4bit"
     返回:
         (model, tokenizer) 元组
     """
-    print(f"正在加载模型: {model_path}")
-    print("使用 4-bit 量化以降低内存占用...")
+    def _load(target_model: str):
+        print(f"正在加载模型: {target_model}")
+        print("使用 4-bit 量化以降低内存占用...")
 
-    model, tokenizer = FastVisionModel.from_pretrained(
-        model_path,
-        load_in_4bit=True,
-        use_gradient_checkpointing="unsloth",
-    )
+        model, tokenizer = FastVisionModel.from_pretrained(
+            target_model,
+            load_in_4bit=True,
+            use_gradient_checkpointing="unsloth",
+        )
 
-    # 启用推理模式
-    FastVisionModel.for_inference(model)
+        FastVisionModel.for_inference(model)
+        print("模型加载成功！")
+        return model, tokenizer
 
-    print("模型加载成功！")
-    return model, tokenizer
+    try:
+        return _load(model_path)
+    except ValueError as exc:
+        if model_path == DEFAULT_MODEL and LOW_VRAM_ERROR_SNIPPET in str(exc):
+            print(f"警告: 默认模型显存不足，自动回退到轻量模型: {LOW_VRAM_FALLBACK_MODEL}")
+            return _load(LOW_VRAM_FALLBACK_MODEL)
+        raise
 
 
 # ============================================================================
@@ -127,15 +152,14 @@ Example output:
             use_cache=True
         )
 
-    # 解码输出
-    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    # 仅解码新生成的 token，避免把输入提示词一起解码出来
+    output_ids = outputs[0]
+    input_length = inputs["input_ids"].shape[1]
+    generated_ids = output_ids[input_length:] if output_ids.shape[0] > input_length else output_ids
+    response = tokenizer.decode(generated_ids, skip_special_tokens=True)
 
-    # 提取助手的回复（在指令之后）
-    # 找到助手回复开始的位置
-    if "<|im_start|>assistant" in response:
-        response = response.split("<|im_start|>assistant")[-1]
-    if "<|im_end|>" in response:
-        response = response.split("<|im_end|>")[0]
+    if not response.strip():
+        response = tokenizer.decode(output_ids, skip_special_tokens=True)
 
     return response.strip()
 
@@ -165,9 +189,12 @@ def parse_bbox_from_text(text: str) -> Optional[List[float]]:
 
     if json_match:
         coords_str = json_match.group(1)
-        coords = [float(x.strip()) for x in coords_str.split(',')]
-        if len(coords) == 4:
-            return coords
+        try:
+            coords = [float(x.strip()) for x in coords_str.split(',')]
+            if len(coords) == 4:
+                return coords
+        except ValueError:
+            pass
 
     # 尝试直接 JSON 解析
     try:
@@ -185,9 +212,12 @@ def parse_bbox_from_text(text: str) -> Optional[List[float]]:
 
     if array_match:
         coords_str = array_match.group(1)
-        coords = [float(x.strip()) for x in coords_str.split(',')]
-        if len(coords) == 4:
-            return coords
+        try:
+            coords = [float(x.strip()) for x in coords_str.split(',')]
+            if len(coords) == 4:
+                return coords
+        except ValueError:
+            pass
 
     return None
 
@@ -247,16 +277,17 @@ def visualize_bbox(
     output_path: str
 ) -> None:
     """
-    在图像上绘制边界框并保存。
+    在图像上绘制病灶区域（半透明填充 + 边界框）并保存。
 
     参数:
         image: PIL 图像对象
         bbox: [x1, y1, x2, y2] 相对坐标列表
         output_path: 保存可视化图像的路径
     """
-    # 创建副本以避免修改原图
-    vis_image = image.copy()
-    draw = ImageDraw.Draw(vis_image)
+    # 创建副本以避免修改原图（使用 RGBA 以支持半透明填充）
+    vis_image = image.copy().convert("RGBA")
+    overlay = Image.new("RGBA", vis_image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay, "RGBA")
 
     width, height = image.size
 
@@ -266,12 +297,15 @@ def visualize_bbox(
     abs_x2 = int(bbox[2] * width)
     abs_y2 = int(bbox[3] * height)
 
-    # 绘制红色矩形框，线宽 3px
+    # 绘制半透明病灶区域 + 红色边界框
     draw.rectangle(
         [abs_x1, abs_y1, abs_x2, abs_y2],
-        outline="red",
+        fill=(255, 0, 0, 72),
+        outline=(255, 0, 0, 255),
         width=3
     )
+
+    vis_image = Image.alpha_composite(vis_image, overlay).convert("RGB")
 
     # 保存
     vis_image.save(output_path)
@@ -499,8 +533,8 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         type=str,
-        default="unsloth/Qwen3-VL-8B-Instruct-unsloth-bnb-4bit",
-        help="模型路径或 HuggingFace 标识符（默认: unsloth/Qwen3-VL-8B-Instruct-unsloth-bnb-4bit）"
+        default=DEFAULT_MODEL,
+        help=f"模型路径或 HuggingFace 标识符（默认: {DEFAULT_MODEL}）"
     )
 
     parser.add_argument(

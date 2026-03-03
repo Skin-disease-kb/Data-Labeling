@@ -1,14 +1,16 @@
 # qwen-derm 依赖配置 - 推理版本
 # 适用于：仅运行 annotate_skin_disease.py 进行图像标注
 # 安装命令：pip install -r requirements.txt
+# Windows + NVIDIA GPU 推荐先安装 CUDA 版 PyTorch（示例 CU126）：
+# python -m pip install --upgrade --index-url https://download.pytorch.org/whl/cu126 torch torchvision torchaudio
 
 # ============== 核心依赖（必须）==============
-# Unsloth 会自动安装兼容的 torch、transformers 等依赖
-unsloth>=2025.1.0
+# Unsloth 会自动安装兼容依赖；为确保 GPU 推理，请优先按上方命令安装 CUDA 版 torch
+unsloth>=2026.2.1
 
-# 固定 transformers 版本以兼容 Unsloth
-# Unsloth 要求 <=4.56.2，我们选择 4.56.2 以获得最新功能
-transformers==4.56.2
+# 固定 transformers 版本以兼容 Qwen3-VL 架构与 Unsloth
+# 经测试 4.57.6 可正常加载 qwen3_vl（4.56.2 会报 model_type 不识别）
+transformers==4.57.6
 
 # 图像处理
 Pillow>=9.0.0
@@ -21,7 +23,7 @@ huggingface-hub>=0.23.0
 # datasets>=2.14.0
 
 # ============== 版本说明 ==============
-# transformers 4.56.2: 经测试与 unsloth 兼容的最新版本
+# transformers 4.57.6: 经测试可兼容 unsloth>=2026.2.1 且支持 qwen3_vl
 # unsloth: 自动处理 torch、xformers、bitsandbytes 等依赖
 # Python 要求: 3.8 - 3.11
 # CUDA: 11.8 或 12.x
