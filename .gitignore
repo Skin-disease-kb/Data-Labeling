@@ -1,0 +1,25 @@
+# Python caches
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Local AI tooling
+.claude/
+CLAUDE.md
+
+# Runtime/model caches
+.cache/
+unsloth_compiled_cache/
+
+# Generated outputs
+annotation_errors.log
+annotations.csv
+tmp_*.csv
+visualized/
+outputs/
+
+# Local archives and scratch artifacts
+data.zip
+visualized_images.tar.gz
+tmp_test_images/

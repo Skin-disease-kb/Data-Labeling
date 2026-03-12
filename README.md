@@ -1,76 +1,307 @@
-# 皮肤病图像标注工具
+# qwen-derm
 
-基于 Qwen3-VL / Qwen2.5-VL 模型的皮肤病图像自动标注工具，能够自动检测并标注皮肤病灶的边界框，并输出可视化高亮结果。
+基于 Qwen3-VL / Qwen2.5-VL 的皮肤病项目，当前包含两条主要工作流：
 
-## 快速开始
+- 病灶定位与标注：`annotate_skin_disease.py`
+- 原图分类 LoRA 微调：`train_qwen3_vl_lora_cls.py`
 
-### 1. 创建 Conda 环境（推荐）
+当前训练目标是：在尽量保留模型病灶定位能力的前提下，用 `data/` 原图数据集提升皮肤病分类能力。
+
+## 项目结构
+
+```text
+qwen-derm/
+├── annotate_skin_disease.py       # 病灶定位 / 标注脚本
+├── train_qwen3_vl_lora_cls.py     # 原图分类 LoRA 微调脚本
+├── requirements.txt               # 推理依赖（仅标注）
+├── requirements-full.txt          # 完整依赖（标注 + 训练）
+├── data/                          # 原图分类训练数据
+├── visualized_images/             # 高亮病灶图数据（当前训练脚本未使用）
+├── outputs/                       # 训练输出目录（运行后生成）
+├── visualized/                    # 标注可视化目录（运行后生成）
+└── .cache/                        # Triton / TorchInductor 缓存（运行后生成）
+```
+
+## 环境配置
+
+### 推荐环境
+
+- Python 3.10
+- Linux 服务器 + NVIDIA GPU + CUDA
+- 独立 conda 环境或 venv
+
+### 训练环境安装
+
+`requirements-full.txt` 是训练脚本使用的依赖文件。安装顺序固定为两步：
+
+1. 先安装与服务器 CUDA 匹配的 PyTorch
+2. 再安装项目依赖
+
+```bash
+conda create -n qwen-derm-lora python=3.10 -y
+conda activate qwen-derm-lora
+
+python -m pip install --upgrade pip setuptools wheel
+
+# 示例：CUDA 12.6
+python -m pip install --index-url https://download.pytorch.org/whl/cu126 torch torchvision torchaudio
+
+# 安装训练依赖
+python -m pip install -r requirements-full.txt
+```
+
+说明：
+
+- `requirements-full.txt` 不直接写死 `torch / torchvision / torchaudio / triton / xformers / bitsandbytes`
+- 这些底层包与服务器的 CUDA、驱动、系统和 GPU 架构强相关，必须按目标机器单独安装
+- 如果服务器 CUDA 不是 `12.6`，把上面的 PyTorch 安装命令换成对应版本即可
+
+### 仅标注环境安装
+
+如果只做病灶定位与可视化，不跑训练：
 
 ```bash
 conda create -n qwen-derm python=3.10 -y
 conda activate qwen-derm
-python -m pip install --upgrade pip
-```
 
-### 2. 安装 CUDA 版 PyTorch 和项目依赖（Windows）
-
-> 参考 Unsloth 官方 Windows 安装建议，先安装 CUDA 版 PyTorch，再安装项目依赖。
-
-```bash
-# 以 CUDA 12.6 为例（请按你的驱动/CUDA版本调整）
-python -m pip install --upgrade --index-url https://download.pytorch.org/whl/cu126 torch torchvision torchaudio
-
-# 推理版（仅标注）
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install --index-url https://download.pytorch.org/whl/cu126 torch torchvision torchaudio
 python -m pip install -r requirements.txt
-
-# 或完整版（标注 + 训练）
-# python -m pip install -r requirements-full.txt
 ```
 
-#### 依赖说明
-
-| 核心依赖 | 版本 | 说明 |
-|----------|------|------|
-| `unsloth` | >=2026.2.1 | 模型推理加速框架 |
-| `transformers` | **4.57.6** | 支持 `qwen3_vl` 架构并兼容当前 Unsloth |
-| `trl` | 0.22.2 | 训练依赖（可选） |
-| `Pillow` | >=9.0.0 | 图像处理 |
-
-> **注意**：`Qwen3-VL` 需要较新的 `transformers` 才能识别 `qwen3_vl` 架构，项目已固定为 `transformers==4.57.6`（与当前 Unsloth 版本实测兼容）。
-
-### 3. 验证安装
-
-运行以下命令确认 PyTorch 能识别 GPU：
+### 安装验证
 
 ```bash
-python -c "import torch, transformers; print('CUDA 可用:', torch.cuda.is_available()); print('CUDA 版本:', torch.version.cuda); print('transformers:', transformers.__version__)"
+python -c "import torch, transformers; print('CUDA:', torch.cuda.is_available()); print('CUDA version:', torch.version.cuda); print('transformers:', transformers.__version__)"
+python -c "import unsloth; from trl import SFTTrainer, SFTConfig; print('unsloth+trl ok')"
 ```
 
-应至少满足：
-- `CUDA 可用: True`
-- `transformers: 4.57.6`
+至少应满足：
 
-### 4. 准备数据
+- `torch.cuda.is_available() == True`
+- `transformers == 4.57.6`
+- `unsloth` 和 `trl` 能正常导入
 
-将待标注的皮肤病图像放在一个文件夹中，例如：
+## 数据准备
 
+### 训练数据
+
+当前分类 LoRA 脚本使用 `data/` 原图数据集，目录名映射为 5 个固定标签：
+
+```text
+data/
+├── ACK_光化性角化病/
+├── DF_皮肤纤维瘤/
+├── MEL_黑色素瘤/
+├── SCC_鳞状细胞癌/
+└── SEK_脂溢性角化病/
 ```
-D:\Skin-disease\images\
-  ├── lesion_001.jpg
-  ├── lesion_002.png
-  ├── lesion_003.jpg
-  └── ...
+
+说明：
+
+- 训练标签固定为：`ACK / DF / MEL / SCC / SEK`
+- 空目录 `SEK_脂溢性角化病（高精图片版）` 会被自动忽略
+- 训练脚本当前不使用 `visualized_images/` 里的高亮图
+
+### 标注输入数据
+
+标注脚本接收一个普通图像目录，例如：
+
+```text
+images/
+├── lesion_001.jpg
+├── lesion_002.png
+└── ...
 ```
 
-支持的图像格式：`.jpg`, `.jpeg`, `.png`, `.bmp`, `.tif`, `.tiff`
+支持格式：`.jpg`, `.jpeg`, `.png`, `.bmp`, `.tif`, `.tiff`
 
-### 5. 运行标注
+## 分类 LoRA 微调
+
+### 基本训练命令
 
 ```bash
-python annotate_skin_disease.py --input ./images --output annotations.csv
+python train_qwen3_vl_lora_cls.py
 ```
 
-## 使用说明
+常用自定义路径：
+
+```bash
+python train_qwen3_vl_lora_cls.py \
+  --data-dir ./data \
+  --output-dir ./outputs/qwen3_vl_skin_cls_lora_raw
+```
+
+### 当前默认训练配置
+
+当前脚本是一个偏保守的 LoRA 基线版本，默认配置如下：
+
+- 基座模型：`unsloth/Qwen3-VL-8B-Instruct-unsloth-bnb-4bit`
+- 加载方式：`load_in_4bit=True`
+- 梯度检查点：`use_gradient_checkpointing="unsloth"`
+- LoRA 范围：只训练语言层
+- 视觉层：冻结
+- 语言 attention：开启 LoRA
+- 语言 MLP：开启 LoRA
+- `r=16`
+- `lora_alpha=16`
+- `lora_dropout=0`
+- `epochs=3`
+- `learning_rate=1e-4`
+- `max_length=1024`
+- `batch_size=1`
+- `gradient_accumulation_steps=8`
+- 有效 batch size：`8`
+- `warmup_ratio=0.05`
+- `optim="adamw_8bit"`
+- `weight_decay=0.01`
+- `max_grad_norm=0.3`
+- `lr_scheduler_type="cosine"`
+- 自动使用 `bf16`；若 GPU 不支持则退到 `fp16`
+
+数据处理默认配置：
+
+- 验证集比例：`0.1`
+- 随机种子：`3407`
+- 少数类过采样下限：训练集中最大类样本数的 `0.5`
+
+训练前后会自动生成验证集评估，并在每个 epoch 结束后保存当前最优 adapter。
+
+### 常用参数
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--data-dir` | 原始图像数据目录 | `D:\qwen-derm\data` |
+| `--output-dir` | 训练输出目录 | `D:\qwen-derm\outputs\qwen3_vl_skin_cls_lora_raw` |
+| `--model-name` | 基础模型 ID 或路径 | `unsloth/Qwen3-VL-8B-Instruct-unsloth-bnb-4bit` |
+| `--fallback-model-name` | 8B 显存不足时的回退模型 | 空 |
+| `--val-ratio` | 验证集比例 | `0.1` |
+| `--epochs` | 训练轮数 | `3` |
+| `--lr` | 学习率 | `1e-4` |
+| `--max-length` | 最大序列长度 | `1024` |
+| `--batch-size` | 单卡 batch size | `1` |
+| `--grad-accum` | 梯度累积步数 | `8` |
+| `--oversample-floor-ratio` | 少数类过采样下限比例 | `0.5` |
+| `--max-steps` | 仅用于 smoke test | 空 |
+
+### 推荐训练命令
+
+默认保守版：
+
+```bash
+python train_qwen3_vl_lora_cls.py
+```
+
+服务器显存更充裕时，优先先提吞吐，不先改学习动态：
+
+```bash
+python train_qwen3_vl_lora_cls.py --batch-size 2 --grad-accum 4
+```
+
+如果仍然稳定，再试：
+
+```bash
+python train_qwen3_vl_lora_cls.py --batch-size 4 --grad-accum 2
+```
+
+说明：
+
+- 上面两组都保持有效 batch size 为 `8`
+- 这意味着训练稳定性与默认配置接近，但吞吐更高，更适合显存充足的服务器
+- 当前脚本默认不会自动回退到 3B，只有显式传入 `--fallback-model-name` 才会启用回退
+
+### 参数调节建议
+
+#### 1. 显存优先策略
+
+如果你的目标是“先稳妥跑通”：
+
+- 保持 `4bit + language-only LoRA`
+- 保持 `batch_size * grad_accum = 8`
+- 先跑 `3` 个 epoch 看验证集 `macro_f1`
+
+如果你的目标是“在服务器上更快”：
+
+- 优先加 `batch-size`
+- 对应减小 `grad-accum`
+- 第一轮不要同时改学习率
+
+推荐起点：
+
+| 显存情况 | 建议参数 |
+|----------|----------|
+| 8GB 左右 | `--batch-size 1 --grad-accum 8` |
+| 16GB - 24GB | `--batch-size 2 --grad-accum 4` |
+| 24GB - 48GB | `--batch-size 4 --grad-accum 2` |
+
+#### 2. 学习率策略
+
+当前默认 `1e-4` 是稳妥起点。
+
+- 如果只是提 `batch-size`，先不动学习率
+- 如果后续把有效 batch 从 `8` 提到 `16`，仍然建议先继续用 `1e-4`
+- 只有当训练很稳且收敛偏慢时，再考虑试 `1.5e-4`
+
+#### 3. 训练轮数策略
+
+- 第一轮正式训练建议保持 `3` 个 epoch
+- 如果验证集 `macro_f1` 还在持续上升，再试 `5` 个 epoch
+- 如果第 `2` 到 `3` 个 epoch 已经明显平台期，就不要盲目拉长
+
+#### 4. 烟雾测试
+
+不要一开始就直接跑完整训练。先跑一轮 smoke test：
+
+```bash
+python train_qwen3_vl_lora_cls.py --max-steps 2
+```
+
+确认这些都正常后，再跑正式训练：
+
+- 模型能装入显存
+- baseline 评估能正常结束
+- 训练过程不 OOM
+- `best_adapter` 和 `final_adapter` 能正确写出
+
+#### 5. 大显存服务器的后续优化方向
+
+当前脚本的重点是“先建立稳妥基线”，不是“榨干大显存”。
+
+如果后续你想进一步利用服务器显存换取更强分类能力，优先级建议是：
+
+1. 先把吞吐调上去：`batch-size ↑, grad-accum ↓`
+2. 跑完完整训练，确认基线 `macro_f1`
+3. 再考虑单独开实验，放开部分 vision layers 的 LoRA
+
+注意：
+
+- 第 3 步不是当前脚本默认行为
+- 它需要额外改脚本，不能直接靠现有 CLI 参数打开
+
+### 训练输出说明
+
+训练输出目录默认在 `outputs/qwen3_vl_skin_cls_lora_raw/`，主要会生成：
+
+- `label_mapping.json`
+- `split_summary.json`
+- `trainable_params.json`
+- `model_resolution.json`
+- `baseline_summary.json`
+- `training_summary.json`
+- `eval/baseline/`
+- `eval/final/`
+- `best_adapter/`
+- `final_adapter/`
+
+关键指标：
+
+- `accuracy`
+- `macro_f1`
+- `invalid_rate`
+- `classification_report`
+- `confusion_matrix`
+
+## 病灶标注脚本
 
 ### 基本用法
 
@@ -82,135 +313,58 @@ python annotate_skin_disease.py --input <图像文件夹> --output <输出CSV>
 
 | 参数 | 简写 | 说明 | 默认值 |
 |------|------|------|--------|
-| `--input` | `-i` | 输入图像文件夹（必需） | - |
+| `--input` | `-i` | 输入图像文件夹 | 必填 |
 | `--output` | `-o` | 输出 CSV 文件路径 | `annotations.csv` |
 | `--model` | - | 模型路径或 HuggingFace ID | `unsloth/Qwen3-VL-8B-Instruct-unsloth-bnb-4bit` |
-| `--temperature` | - | 采样温度（越低越稳定） | `0.7` |
+| `--temperature` | - | 采样温度 | `0.7` |
 | `--visualize` | - | 生成可视化图像 | `True` |
 | `--no-visualize` | - | 禁用可视化 | - |
 | `--viz-dir` | - | 可视化输出目录 | `visualized` |
 
-> 如果默认 `8B` 模型在显存不足（常见于 8GB 显存）时加载失败，脚本会自动回退到 `unsloth/Qwen2.5-VL-3B-Instruct-unsloth-bnb-4bit`。
->
-> 脚本会自动将 Triton / TorchInductor 缓存写入项目目录下的 `.cache/`，避免 Windows 中文用户名路径导致的编译缓存编码错误。
+说明：
+
+- 如果默认 `8B` 模型在显存不足时加载失败，脚本会自动回退到 `unsloth/Qwen2.5-VL-3B-Instruct-unsloth-bnb-4bit`
+- 脚本会把 Triton / TorchInductor 缓存写入项目目录下的 `.cache/`
 
 ### 使用示例
 
 ```bash
-# 基本使用
 python annotate_skin_disease.py --input ./images --output annotations.csv
-
-# 指定可视化文件夹
 python annotate_skin_disease.py --input ./images --output annotations.csv --viz-dir ./results
-
-# 调整温度参数（更稳定的输出）
 python annotate_skin_disease.py --input ./images --temperature 0.5
-
-# 手动指定 3B 模型（显存更友好）
 python annotate_skin_disease.py --input ./images --model unsloth/Qwen2.5-VL-3B-Instruct-unsloth-bnb-4bit
-
-# 只标注不生成可视化
 python annotate_skin_disease.py --input ./images --no-visualize
-
-# 查看帮助
 python annotate_skin_disease.py --help
 ```
 
-## 输出说明
+### 标注输出
 
-### 1. CSV 标注文件
+CSV 输出字段：
 
-生成的 CSV 文件包含以下字段：
+- `image_name`
+- `image_path`
+- `x1`
+- `y1`
+- `x2`
+- `y2`
+- `status`
+- `error_msg`
 
-| 字段 | 说明 |
-|------|------|
-| `image_name` | 图像文件名 |
-| `image_path` | 图像完整路径 |
-| `x1` | 左上角 X 坐标（相对 0-1） |
-| `y1` | 左上角 Y 坐标（相对 0-1） |
-| `x2` | 右下角 X 坐标（相对 0-1） |
-| `y2` | 右下角 Y 坐标（相对 0-1） |
-| `status` | 标注状态（success/failed） |
-| `error_msg` | 错误信息（如果失败） |
+可视化结果会输出到 `visualized/`，失败样本会记录到 `annotation_errors.log`。
 
-**示例输出**：
+## 版本说明
 
-```csv
-image_name,image_path,x1,y1,x2,y2,status,error_msg
-lesion_001.jpg,D:/Skin-disease/images/lesion_001.jpg,0.2345,0.3456,0.6789,0.8901,success,
-lesion_002.png,D:/Skin-disease/images/lesion_002.png,0.1234,0.2345,0.5678,0.7890,success,
-lesion_003.jpg,D:/Skin-disease/images/lesion_003.jpg,,,failed,无法从回复中解析边界框
-```
+当前训练依赖采用以下已验证组合：
 
-### 2. 可视化图像
+- `unsloth>=2026.2.1`
+- `transformers==4.57.6`
+- `trl==0.22.2`
 
-在 `visualized/` 文件夹中生成带红色边界框和半透明病灶区域高亮的图像，文件名与原图保持一致。
+其中：
 
-### 3. 错误日志
-
-如果有失败的标注，会自动生成 `annotation_errors.log` 文件，记录所有失败的案例和错误信息。
-
-## 坐标系统
-
-- 使用**相对坐标**（0-1 范围）
-- 原点在**左上角**
-- 格式：`[x1, y1, x2, y2]`
-  - `x1, y1`: 左上角坐标
-  - `x2, y2`: 右下角坐标
-
-转换为像素坐标：
-```python
-像素坐标 = 相对坐标 × 图像尺寸
-abs_x1 = int(x1 × 图像宽度)
-abs_y1 = int(y1 × 图像高度)
-```
-
-### 提示词策略
-
-```
-Please detect and localize the skin disease lesion in this image.
-
-Requirements:
-1. Output only the bounding box coordinates in JSON format
-2. Use relative coordinates (0-1 range)
-3. Format: {"bbox": [x1, y1, x2, y2]}
-4. Return only the JSON, no additional text
-
-Example output:
-{"bbox": [0.2, 0.3, 0.8, 0.9]}
-```
-
-## 文件说明
-
-```
-qwen-derm/
-├── annotate_skin_disease.py   # 主标注脚本
-├── README.md                  # 本文档
-├── requirements.txt           # 推理依赖（仅标注）
-├── requirements-full.txt      # 完整依赖（标注+训练）
-├── images/                    # 输入图像文件夹（需自行创建）
-├── annotations.csv            # 输出标注文件（运行后生成）
-├── annotation_errors.log      # 错误日志（运行后生成）
-├── visualized/                # 可视化图像（运行后生成）
-└── .cache/                    # Triton / TorchInductor 缓存（运行后自动生成）
-```
-
-## 环境要求
-
-- **Python**: 3.8 - 3.11
-- **CUDA**: 11.8 或 12.x
-- **GPU**: NVIDIA GPU（推荐 8GB+ 显存；8GB 环境默认会自动回退到 3B 模型）
-
-## 版本兼容性
-
-本项目依赖版本经过精心配置以确保兼容性：
-
-| 包 | 版本 | 兼容性说明 |
-|----|------|-----------|
-| unsloth | >=2026.2.1 | ✅ 与当前脚本和 transformers 组合实测可用 |
-| transformers | 4.57.6 | ✅ 支持 Qwen3-VL 且与当前 Unsloth 兼容 |
-| trl | 0.22.2 | ✅ 支持 transformers >=4.55.0 |
-| datasets | >=2.14.0 | ✅ 新版兼容 |
+- `transformers==4.57.6` 是为了稳定支持 `qwen3_vl`
+- `trl==0.22.2` 与当前 `transformers` 组合已验证可用
+- `requirements-full.txt` 会继续优先保证训练脚本可运行，而不是把所有 CUDA 底层轮子硬编码进去
 
 ## 许可证
 
